@@ -18,8 +18,32 @@ class TranslationConfig:
     max_length: int = 512
 
 
+@dataclass(frozen=True)
+class ModelOverride:
+    model_name: str
+    target_prefix: Optional[str] = None
+
+
 class Translator:
     """Translate text between languages using MarianMT."""
+
+    # Some language pairs (e.g. en->ta) do not exist as Helsinki-NLP identifiers.
+    # Map them to community or multilingual checkpoints that need language
+    # tokens (e.g. >>tam<<). Store both the model name and the token prefix.
+    CUSTOM_MODELS: Dict[Tuple[str, str], ModelOverride] = {
+        ("en", "ta"): ModelOverride(
+            model_name="Helsinki-NLP/opus-mt-en-mul",
+            target_prefix=">>tam<<",
+        ),
+        ("en", "te"): ModelOverride(
+            model_name="Helsinki-NLP/opus-mt-en-mul",
+            target_prefix=">>tel<<",
+        ),
+        ("en", "kn"): ModelOverride(
+            model_name="Helsinki-NLP/opus-mt-en-mul",
+            target_prefix=">>kan<<",
+        ),
+    }
 
     def __init__(self, config: Optional[TranslationConfig] = None) -> None:
         self.config = config or TranslationConfig()
@@ -28,11 +52,14 @@ class Translator:
     def _model_name(src_lang: str, tgt_lang: str) -> str:
         return f"Helsinki-NLP/opus-mt-{src_lang}-{tgt_lang}"
 
+    def _resolve_model(self, src_lang: str, tgt_lang: str) -> ModelOverride:
+        override = self.CUSTOM_MODELS.get((src_lang, tgt_lang))
+        if override:
+            return override
+        return ModelOverride(model_name=self._model_name(src_lang, tgt_lang))
+
     @lru_cache(maxsize=8)
-    def _load_model(
-        self, src_lang: str, tgt_lang: str
-    ) -> Tuple[MarianTokenizer, MarianMTModel]:
-        model_name = self._model_name(src_lang, tgt_lang)
+    def _load_model(self, model_name: str) -> Tuple[MarianTokenizer, MarianMTModel]:
         tokenizer = MarianTokenizer.from_pretrained(model_name)
         model = MarianMTModel.from_pretrained(model_name)
         model.to(self.config.device)
@@ -49,10 +76,15 @@ class Translator:
 
         src = src_lang or self.config.default_src
         tgt = tgt_lang or self.config.default_tgt
-        tokenizer, model = self._load_model(src, tgt)
+        model_override = self._resolve_model(src, tgt)
+        tokenizer, model = self._load_model(model_override.model_name)
+
+        normalized_text = text
+        if model_override.target_prefix:
+            normalized_text = f"{model_override.target_prefix} {normalized_text.strip()}"
 
         inputs = tokenizer(
-            text,
+            normalized_text,
             return_tensors="pt",
             truncation=True,
             padding=True,
@@ -68,7 +100,7 @@ class Translator:
 
         return {
             "translated_text": translated[0],
-            "model_name": self._model_name(src, tgt),
+            "model_name": model_override.model_name,
         }
 
 
