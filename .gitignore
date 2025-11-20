@@ -1,0 +1,93 @@
+########################
+# OS-specific (macOS)
+########################
+.DS_Store
+.AppleDouble
+.LSOverride
+
+########################
+# Python
+########################
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+pytestdebug.log
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Django/Flask/etc.
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+########################
+# Environment & secrets
+########################
+.env
+.env.*
+!*.example
+*.pem
+*.key
+*.crt
+
+########################
+# Editors / IDEs
+########################
+.vscode/
+.idea/
+*.code-workspace
+
+########################
+# Project-specific
+########################
+samples/
+
+########################
+# Misc
+########################
+*.swp
+*.swo
+*.tmp
+*.bak
