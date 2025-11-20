@@ -13,11 +13,22 @@ import time
 import logging
 
 from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import os
 
 from app.pipeline import AudioLingoPipeline
 
+# Create static directory if it doesn't exist
+static_dir = Path("static/audio")
+static_dir.mkdir(parents=True, exist_ok=True)
+
 app = FastAPI(title="AudioLingo Mini UI")
+
+# Mount the static directory for serving audio files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 pipeline = None  # Will be initialized on first request
 
 # Configure logging
@@ -125,7 +136,7 @@ FORM_HTML = """
     </div>
 
     <label>
-      <input type="checkbox" name="enable_tts" value="true" />
+      <input type="checkbox" name="enable_tts" value="true" checked />
       Generate TTS audio (requires Python 3.10+ and Coqui support)
     </label>
 
@@ -373,7 +384,12 @@ async def submit_form(
     if pipeline is None:
         logger.info("Loading pipeline models...")
         pipeline_start = time.time()
-        pipeline = AudioLingoPipeline()
+        from app.pipeline import PipelineConfig
+        # Keep TTS disabled at the config level and let the per-request
+        # enable_tts flag (the checkbox in the UI) control whether TTS
+        # should run. The TTS engine will be initialized lazily on demand.
+        config = PipelineConfig(enable_tts=False)
+        pipeline = AudioLingoPipeline(config=config)
         logger.info(f"Pipeline loaded in {time.time() - pipeline_start:.2f}s")
     
     # Handle targets - convert string to list if needed
@@ -444,9 +460,18 @@ async def submit_form(
         for entry in result["translations"]
     )
     tts_html = "".join(
-        f"<li>{tts['target_language']}: {tts['audio_path']}</li>"
+        f"""
+        <div class="tts-item">
+            <div>{tts['target_language']}:</div>
+            <audio controls>
+                <source src="{tts['audio_path']}" type="audio/wav">
+                Your browser does not support the audio element.
+            </audio>
+            <a href="{tts['audio_path']}" download>Download</a>
+        </div>
+        """
         for tts in result["tts_outputs"]
-    ) or "<li><em>TTS disabled.</em></li>"
+    ) or "<div class='tts-disabled'><em>TTS disabled or no audio generated.</em></div>"
     
     return HTMLResponse(
         f"""
@@ -456,24 +481,136 @@ async def submit_form(
   <meta charset="utf-8" />
   <title>AudioLingo Results</title>
   <style>
-    body {{ font-family: Arial, sans-serif; margin: 2rem; max-width: 720px; }}
-    .result {{ border: 1px solid #d8d8d8; padding: 1rem; margin-top: 1.5rem; border-radius: 6px; }}
-    a.button {{ display: inline-block; margin-top: 1rem; text-decoration: none; color: white; background: #2b3a67; padding: 0.5rem 1rem; border-radius: 4px; }}
+    body {{ 
+      font-family: Arial, sans-serif; 
+      margin: 2rem; 
+      max-width: 800px;
+      line-height: 1.6;
+    }}
+    .result {{ 
+      border: 1px solid #e0e0e0; 
+      padding: 1.5rem; 
+      margin: 1.5rem 0; 
+      border-radius: 8px;
+      background: #f9f9f9;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }}
+    h1 {{ 
+      color: #2b3a67;
+      margin-bottom: 1.5rem;
+    }}
+    .button {{ 
+      display: inline-block; 
+      margin-top: 1rem; 
+      text-decoration: none; 
+      color: white; 
+      background: #2b3a67; 
+      padding: 0.6rem 1.2rem; 
+      border-radius: 4px; 
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }}
+    .button:hover {{
+      background: #1e2a4a;
+    }}
+    .tts-outputs {{
+      margin-top: 1.5rem;
+    }}
+    .tts-item {{
+      margin: 1.5rem 0;
+      padding: 1rem;
+      background: white;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+    }}
+    .tts-item h3 {{
+      margin: 0 0 0.75rem 0;
+      color: #333;
+    }}
+    audio {{
+      width: 100%;
+      max-width: 500px;
+      margin: 0.5rem 0;
+    }}
+    .download-link {{
+      display: inline-block;
+      margin-top: 0.5rem;
+      color: #2b3a67;
+      text-decoration: none;
+      font-size: 0.9em;
+    }}
+    .download-link:hover {{
+      text-decoration: underline;
+    }}
+    .transcription {{
+      background: white;
+      padding: 1rem;
+      border-radius: 4px;
+      border-left: 4px solid #2b3a67;
+      margin: 1rem 0;
+    }}
+    .translations {{
+      margin: 1.5rem 0;
+    }}
+    .translations ul {{
+      list-style-type: none;
+      padding: 0;
+    }}
+    .translations li {{
+      margin: 0.75rem 0;
+      padding: 0.75rem;
+      background: white;
+      border-radius: 4px;
+      border-left: 3px solid #4a6baf;
+    }}
   </style>
 </head>
 <body>
-  <h1>AudioLingo – Results</h1>
+  <h1>AudioLingo – Translation Results</h1>
+  
   <div class="result">
-    <p><strong>Detected language:</strong> {result["detected_language"]}</p>
-    <p><strong>Transcription:</strong></p>
-    <p>{result["transcription"]}</p>
-    <p><strong>Translations:</strong></p>
-    <ul>{translations_html}</ul>
-    <p><strong>TTS Outputs:</strong></p>
-    <ul>{tts_html}</ul>
+    <h2>Detected Language</h2>
+    <p>{result["detected_language"]}</p>
+    
+    <h2>Transcription</h2>
+    <div class="transcription">
+      {result["transcription"]}
+    </div>
+    
+    <div class="translations">
+      <h2>Translations</h2>
+      <ul>
+        {translations_html}
+      </ul>
+    </div>
+    
+    <div class="tts-outputs">
+      <h2>Audio Output</h2>
+      {tts_html}
+    </div>
   </div>
-  <a href="/" class="button">Process another audio</a>
+  
+  <a href="/" class="button">← Translate Another</a>
+  
+  <script>
+    document.querySelectorAll('audio').forEach(function(audio) {{
+      audio.addEventListener('waiting', function() {{
+        console.log('Audio is loading...');
+      }});
+      
+      audio.addEventListener('canplay', function() {{
+        console.log('Audio is ready to play');
+      }});
+      
+      audio.addEventListener('error', function(e) {{
+        console.error('Error loading audio:', e);
+        var errorMsg = document.createElement('div');
+        errorMsg.style.color = 'red';
+        errorMsg.textContent = 'Error loading audio. Try downloading the file instead.';
+        audio.parentNode.insertBefore(errorMsg, audio.nextSibling);
+      }});
+    }});
+  </script>
 </body>
-</html>
-"""
+</html>"""
     )

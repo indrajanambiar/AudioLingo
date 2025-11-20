@@ -5,6 +5,9 @@ from __future__ import annotations
 import time
 import logging
 from dataclasses import dataclass, field
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -26,7 +29,7 @@ class PipelineConfig:
 
 
 class AudioLingoPipeline:
-    """High-level helper that chains ASR → detection → translation → TTS."""
+    """High-level helper that chains ASR e detection e translation e TTS."""
 
     def __init__(
         self,
@@ -40,15 +43,11 @@ class AudioLingoPipeline:
         self.asr = asr or ASRTranscriber(self.config.asr)
         self.detector = detector or LanguageDetector(self.config.language_detection)
         self.translator = translator or Translator(self.config.translation)
-        self.tts_engine = (
-            tts_engine
-            if tts_engine is not None
-            else (
-                TextToSpeechEngine(self.config.tts)
-                if self.config.enable_tts and self.config.tts
-                else None
-            )
-        )
+        # Do not eagerly initialize TTS here. We lazily create the engine
+        # the first time a request actually asks for TTS inside run().
+        # This avoids long startup time and allows the UI checkbox to
+        # genuinely disable TTS.
+        self.tts_engine = tts_engine
 
     @staticmethod
     def _normalize_targets(targets: Union[str, Sequence[str]]) -> List[str]:
@@ -105,6 +104,25 @@ class AudioLingoPipeline:
         translation_start = time.time()
         translations = []
         tts_outputs = []
+
+        # Decide whether to use TTS for this run. The explicit enable_tts
+        # argument takes precedence over the config flag.
+        use_tts = enable_tts if enable_tts is not None else self.config.enable_tts
+
+        # Lazily initialize the TTS engine on first use to avoid long
+        # startup times when TTS is not needed.
+        if use_tts and self.tts_engine is None and self.config.tts:
+            try:
+                self.tts_engine = TextToSpeechEngine(self.config.tts)
+                logger.info("TTS engine initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize TTS engine: {e}")
+                logger.exception("TTS init error details:")
+                # Disable TTS for subsequent runs in this process so we don't
+                # repeatedly try (and fail) to download / initialize models.
+                self.config.tts = None
+                use_tts = False
+
         for tgt_lang in target_langs:
             trans_start = time.time()
             translation = self.translator.translate(
@@ -120,14 +138,24 @@ class AudioLingoPipeline:
                 }
             )
 
-            if (enable_tts or self.config.enable_tts) and self.tts_engine:
+            if use_tts and self.tts_engine:
                 tts_start = time.time()
-                audio_path = self.tts_engine.synthesize(
-                    translation["translated_text"],
-                    output_path=f"translated_{tgt_lang}.wav",
-                )
-                logger.info(f"TTS for {tgt_lang} took {time.time() - tts_start:.2f}s")
-                tts_outputs.append({"target_language": tgt_lang, "audio_path": audio_path})
+                try:
+                    # Pass the target language to the TTS engine
+                    audio_path = self.tts_engine.synthesize(
+                        text=translation["translated_text"],
+                        language=tgt_lang  # Pass the target language code
+                    )
+                    tts_outputs.append(
+                        {
+                            "target_language": tgt_lang,
+                            "audio_path": audio_path,
+                        }
+                    )
+                    logger.info(f"TTS for {tgt_lang} took {time.time() - tts_start:.2f}s")
+                except Exception as e:
+                    logger.error(f"TTS failed for {tgt_lang}: {e}")
+                    logger.exception("TTS error details:")
         
         logger.info(f"Translation phase took {time.time() - translation_start:.2f}s")
         logger.info(f"Total pipeline time: {time.time() - start_time:.2f}s")
